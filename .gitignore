@@ -1,0 +1,9 @@
+build/
+results/
+__pycache__/
+*.pyc
+firmware/p4/build/
+firmware/p4/sdkconfig
+firmware/p4/sdkconfig.old
+firmware/p4/managed_components/
+firmware/p4/dependencies.lock
