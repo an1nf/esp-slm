@@ -24,6 +24,7 @@ test: all
 	./$(OUT)/tern test $(OUT)/tiny_t2.tbin $(OUT)/tiny_kv8.ref --kv int8
 	./$(OUT)/tern test $(OUT)/tiny_t3_h8.tbin $(OUT)/tiny_h8kv8.ref --kv int8
 	$(PY) tests/check_t2_t3.py $(OUT)/tern $(OUT)/tiny_t2.tbin $(OUT)/tiny_t3.tbin
+	$(PY) tests/test_convert.py --out $(OUT)
 	@echo "all tests passed"
 
 $(OUT):
