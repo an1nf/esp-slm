@@ -27,6 +27,10 @@ test: all
 	$(PY) tests/test_convert.py --out $(OUT)
 	$(PY) tests/test_store.py --out $(OUT) --bin $(OUT)/tern
 	$(PY) tools/store_sim.py selftest
+	./$(OUT)/tern lanes $(OUT)/tiny_t3_h8.tbin --lanes 5 --steps 6 --kv int8 --check
+	./$(OUT)/tern lanes $(OUT)/tiny_t3_h8.tbin --lanes 3 --steps 6 --kv int8 --check \
+	    --place $(OUT)/tiny_t3_h8_kv8_stripe.place --chunk 1 --ring 2 \
+	    --bw psram=50,flash=20,sd=10
 	@echo "all tests passed"
 
 $(OUT):

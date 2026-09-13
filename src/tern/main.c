@@ -365,16 +365,22 @@ static int usage(void)
             "  tern bench [rows cols reps]\n"
             "  tern run  <model.tbin> --ids 1,2,3 [--gen N] [options]\n"
             "  tern test <model.tbin> <ref.bin> [--tol X] [--logits out.bin] [options]\n"
+            "  tern lanes <model.tbin> --lanes N --steps P [--bw psram=MBps,flash=..,sd=..]\n"
+            "             [--lat sd=ms] [--ring KiB] [--chunk KiB] [--place f] [--sync] [--check]\n"
             "options: --place file  --kv f32|int8  --buf KiB  --chunk KiB  "
             "--trace file\n");
     return 2;
 }
+
+int cmd_lanes(int argc, char **argv);
 
 int main(int argc, char **argv)
 {
     Opts o = {NULL, NULL, NULL, TERN_KV_F32, 0, 0};
     if (argc >= 2 && strcmp(argv[1], "selftest") == 0)
         return cmd_selftest();
+    if (argc >= 3 && strcmp(argv[1], "lanes") == 0)
+        return cmd_lanes(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "bench") == 0)
         return cmd_bench(argc > 2 ? atoi(argv[2]) : 6912,
                          argc > 3 ? atoi(argv[3]) : 2560,
