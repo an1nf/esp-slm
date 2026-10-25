@@ -36,6 +36,12 @@ test: all
 	./$(OUT)/tern lanes $(OUT)/tiny_t3_h8.tbin --lanes 3 --steps 6 --kv int8 --check \
 	    --place $(OUT)/tiny_t3_h8_kv8_stripe.place --chunk 1 --ring 2 \
 	    --bw psram=50,flash=20,sd=10
+	$(PY) tests/q35_tiny.py $(OUT)
+	./$(OUT)/q35 test $(OUT)/q35_a.gguf $(OUT)/q35_a.ref
+	./$(OUT)/q35 test $(OUT)/q35_b.gguf $(OUT)/q35_b.ref
+	./$(OUT)/q35 test $(OUT)/q35_a.gguf $(OUT)/q35_c.ref
+	./$(OUT)/q35 test $(OUT)/q35_d.gguf $(OUT)/q35_d.ref
+	./$(OUT)/q35 test $(OUT)/q35_e.gguf $(OUT)/q35_e.ref
 	@echo "all tests passed"
 
 $(OUT):
