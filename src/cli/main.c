@@ -10,7 +10,13 @@ static void usage(void)
             "                      [--state f32|f16|bf16|int8] [--print] [--trace f]\n"
             "     q35 score <gguf> --ids ... --from P [--chunk T] [--top K] [--ctx N] [--kv f16|f32]\n"
             "     q35 test  <gguf> <ref.bin>\n"
-            "     q35 dump  <gguf> <out.bin> --ids ... [--chunk T] [--kv f16|f32] [--state ...]\n");
+            "     q35 dump  <gguf> <out.bin> --ids ... [--chunk T] [--kv f16|f32] [--state ...]\n"
+            "     q35 spec  <gguf> --ids ... --gen N [--gamma G] [--ngram K] [--drafter pld|jacobi|mix|none]\n"
+            "                      [--check] [--print] [--stop] [--stream]\n"
+            "                      [--temp T] [--top-k K] [--top-p P] [--presence X] [--seed S]\n"
+            "                      [--tree N]   (N-node tree; --gamma = max depth)\n"
+            "                      [--keyed 0|1] (position-keyed sampling, default 1)\n"
+            "                      [--adj 1 [--adj-file F [--adj-ro 1]]] (adjacency drafts)\n");
 }
 
 int main(int argc, char **argv)
@@ -21,6 +27,8 @@ int main(int argc, char **argv)
     }
     if (!strcmp(argv[1], "meta"))
         return cmd_meta(argv[2]);
+    if (!strcmp(argv[1], "samptest"))
+        return cmd_samptest();
     Q35Model m;
     char err[256];
     const double t0 = now_s();
@@ -36,7 +44,7 @@ int main(int argc, char **argv)
     } else if (!strcmp(argv[1], "test") && argc >= 4) {
         rc = cmd_test(&m, argv[3]);
     } else if (!strcmp(argv[1], "run") || !strcmp(argv[1], "score")
-               || (!strcmp(argv[1], "dump") && argc >= 4)) {
+               || !strcmp(argv[1], "spec") || (!strcmp(argv[1], "dump") && argc >= 4)) {
         g_model_path = argv[2];
         load_stops(argv[2]);
         const int dump = !strcmp(argv[1], "dump");
@@ -49,6 +57,11 @@ int main(int argc, char **argv)
             load_vocab(argv[2]);
         Q35State s;
         const int score = !strcmp(argv[1], "score");
+        const int spec = !strcmp(argv[1], "spec");
+        if (spec && o.chunk < o.gamma + 1)
+            o.chunk = o.gamma + 1;
+        if (spec && o.chunk < o.tree)
+            o.chunk = o.tree;
         if (q35_state_init(&s, &m, o.ctx, o.chunk, o.kv_f16)) {
             fprintf(stderr, "out of memory for state\n");
             q35_free(&m);
@@ -62,7 +75,8 @@ int main(int argc, char **argv)
             s.dbg = fopen(getenv("Q35_DUMP"), "wb");
         if (getenv("Q35_HDUMP"))
             s.hdump = fopen(getenv("Q35_HDUMP"), "wb");
-        rc = dump ? cmd_dump(&m, &s, &o, argv[3]) : cmd_run(&m, &s, &o, score);
+        rc = dump ? cmd_dump(&m, &s, &o, argv[3])
+             : spec ? cmd_spec(&m, &s, &o) : cmd_run(&m, &s, &o, score);
         if (s.trace)
             fclose(s.trace);
         if (s.dbg)

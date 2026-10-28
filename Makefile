@@ -42,6 +42,7 @@ test: all
 	./$(OUT)/q35 test $(OUT)/q35_a.gguf $(OUT)/q35_c.ref
 	./$(OUT)/q35 test $(OUT)/q35_d.gguf $(OUT)/q35_d.ref
 	./$(OUT)/q35 test $(OUT)/q35_e.gguf $(OUT)/q35_e.ref
+	./$(OUT)/q35 samptest -
 	@echo "all tests passed"
 
 $(OUT):
