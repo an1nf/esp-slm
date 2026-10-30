@@ -10,6 +10,7 @@ static void usage(void)
             "                      [--state f32|f16|bf16|int8] [--print] [--trace f]\n"
             "     q35 score <gguf> --ids ... --from P [--chunk T] [--top K] [--ctx N] [--kv f16|f32]\n"
             "     q35 test  <gguf> <ref.bin>\n"
+            "     q35 treetest <gguf> --ids ... [--gamma N] [--seed S] [--kv ...] [--state ...] [--tol x]\n"
             "     q35 dump  <gguf> <out.bin> --ids ... [--chunk T] [--kv f16|f32] [--state ...]\n"
             "     q35 spec  <gguf> --ids ... --gen N [--gamma G] [--ngram K] [--drafter pld|jacobi|mix|none]\n"
             "                      [--check] [--print] [--stop] [--stream]\n"
@@ -43,6 +44,13 @@ int main(int argc, char **argv)
         printf("  load: %.1f s\n", tl);
     } else if (!strcmp(argv[1], "test") && argc >= 4) {
         rc = cmd_test(&m, argv[3]);
+    } else if (!strcmp(argv[1], "treetest")) {
+        Opts o;
+        if (parse_opts(argc, argv, 3, &o)) {
+            q35_free(&m);
+            return 2;
+        }
+        rc = cmd_treetest(&m, &o);
     } else if (!strcmp(argv[1], "run") || !strcmp(argv[1], "score")
                || !strcmp(argv[1], "spec") || (!strcmp(argv[1], "dump") && argc >= 4)) {
         g_model_path = argv[2];
