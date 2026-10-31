@@ -11,6 +11,7 @@ static void usage(void)
             "     q35 score <gguf> --ids ... --from P [--chunk T] [--top K] [--ctx N] [--kv f16|f32]\n"
             "     q35 test  <gguf> <ref.bin>\n"
             "     q35 treetest <gguf> --ids ... [--gamma N] [--seed S] [--kv ...] [--state ...] [--tol x]\n"
+            "     q35 cmpstate <gguf> [--cands fmt[:rank[:chunk]],...] --ids ...\n"
             "     q35 dump  <gguf> <out.bin> --ids ... [--chunk T] [--kv f16|f32] [--state ...]\n"
             "     q35 spec  <gguf> --ids ... --gen N [--gamma G] [--ngram K] [--drafter pld|jacobi|mix|none]\n"
             "                      [--check] [--print] [--stop] [--stream]\n"
@@ -44,6 +45,19 @@ int main(int argc, char **argv)
         printf("  load: %.1f s\n", tl);
     } else if (!strcmp(argv[1], "test") && argc >= 4) {
         rc = cmd_test(&m, argv[3]);
+    } else if (!strcmp(argv[1], "cmpstate")) {
+        Opts o;
+        const char *cands = "f16,bf16,int8,ro32:16:2,ro8:16:2,ro8:16:16";
+        int k = 3;
+        if (argc > 4 && !strcmp(argv[3], "--cands")) {
+            cands = argv[4];
+            k = 5;
+        }
+        if (parse_opts(argc, argv, k, &o)) {
+            q35_free(&m);
+            return 2;
+        }
+        rc = cmd_cmpstate(&m, &o, cands);
     } else if (!strcmp(argv[1], "treetest")) {
         Opts o;
         if (parse_opts(argc, argv, 3, &o)) {
