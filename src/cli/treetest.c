@@ -19,13 +19,18 @@ int cmd_treetest(const Q35Model *m, const Opts *o)
         fprintf(stderr, "out of memory\n");
         return 1;
     }
-    A.state_fmt = B.state_fmt = o->state;
-    A.ro_rmax = B.ro_rmax = o->ro_rank;
+    apply_quant(&A, o);
+    apply_quant(&B, o);
 
     const int ro = o->state >= Q35_STATE_RO32;
     const float tol = ro ? (o->tol > 0.0f ? o->tol : 0.05f) : 0.0f;
-    if (ro)
-        B.state_fmt = Q35_STATE_F32;
+    if (ro) {
+        Opts ref = *o;
+        ref.state = Q35_STATE_F32;
+        ref.dither = ref.smooth = ref.x16 = ref.kv_bits = 0;
+        ref.hi = 0.0f;
+        apply_quant(&B, &ref);
+    }
     double maxdiff = 0.0;
     long amax_ok = 0, amax_n = 0;
     int *hist = (int *)malloc(((size_t)n0 + (size_t)rounds * N + 1) * sizeof(int));

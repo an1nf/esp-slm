@@ -46,9 +46,33 @@ int cmd_cmpstate(const Q35Model *m, const Opts *o, const char *cands)
     printf("| candidate | argmax equal | KL mean | KL median | KL max | KL mean 2nd half | "
            "materializations |\n|---|---|---|---|---|---|---|\n");
     for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
-        char fmt[16] = "";
+        char spec[48] = "", fmt[16] = "", mods[48] = "";
         int rank = 16, chunk = 16;
-        sscanf(tok, "%15[^:]:%d:%d", fmt, &rank, &chunk);
+        sscanf(tok, "%47[^:]:%d:%d", spec, &rank, &chunk);
+        sscanf(spec, "%15[^+]%47s", fmt, mods);
+        Opts q = *o;
+        q.dither = q.smooth = q.x16 = q.kv_bits = q.kv_refine = 0;
+        q.kv_recent = 16;
+        q.hi = 0.0f;
+        int bad = 0;
+        for (char *md = mods; *md == '+';) {
+            char *nx = strchr(md + 1, '+');
+            if (nx)
+                *nx = 0;
+            md++;
+            if (!strcmp(md, "d")) q.dither = 1;
+            else if (!strcmp(md, "s")) q.smooth = 1;
+            else if (!strcmp(md, "x16")) q.x16 = 1;
+            else if (md[0] == 'h') q.hi = (float)atof(md + 1) / 100.0f;
+            else if (md[0] == 'k') q.kv_bits = atoi(md + 1);
+            else if (md[0] == 'r') q.kv_refine = atoi(md + 1);
+            else if (md[0] == 'w') q.kv_recent = atoi(md + 1);
+            else bad = 1;
+            if (!nx)
+                break;
+            *nx = '+';
+            md = nx;
+        }
         int sf = -1;
         if (!strcmp(fmt, "f32") || !strcmp(fmt, "f32n")) sf = Q35_STATE_F32;
         else if (!strcmp(fmt, "f16")) sf = Q35_STATE_F16;
@@ -57,15 +81,16 @@ int cmd_cmpstate(const Q35Model *m, const Opts *o, const char *cands)
         else if (!strcmp(fmt, "ro32")) sf = Q35_STATE_RO32;
         else if (!strcmp(fmt, "ro8")) sf = Q35_STATE_RO8;
         else if (!strcmp(fmt, "ro16")) sf = Q35_STATE_RO16;
-        if (sf < 0 || chunk < 1 || chunk > 64) {
+        if (sf < 0 || bad || chunk < 1 || chunk > 64 || (q.kv_bits && q.kv_bits != 2 && q.kv_bits != 4)) {
             fprintf(stderr, "unknown candidate: %s\n", tok);
             return 2;
         }
         Q35State C;
         if (q35_state_init(&C, m, n + 8, chunk, 0))
             return 1;
-        C.state_fmt = sf;
-        C.ro_rmax = rank;
+        q.state = sf;
+        q.ro_rank = rank;
+        apply_quant(&C, &q);
         if (!strcmp(fmt, "f32n"))
             C.noise_eps = (float)pow(10.0, -rank);
         int agree = 0;
@@ -111,13 +136,16 @@ int cmd_cmpstate(const Q35Model *m, const Opts *o, const char *cands)
                 srt[j] = srt[j - 1];
                 srt[j - 1] = x;
             }
-        char name[64];
+        char name[96];
         if (sf >= Q35_STATE_RO32)
-            snprintf(name, sizeof(name), "%s rank %d, %d per pass", fmt, rank, chunk);
+            snprintf(name, sizeof(name), "%s rank %d, %d per pass", spec, rank, chunk);
         else if (C.noise_eps > 0.0f)
             snprintf(name, sizeof(name), "f32 + noise 1e-%d, %d per pass", rank, chunk);
         else
-            snprintf(name, sizeof(name), "%s, %d per pass", fmt, chunk);
+            snprintf(name, sizeof(name), "%s, %d per pass", spec, chunk);
+        if (C.kv_rows)
+            snprintf(name + strlen(name), sizeof(name) - strlen(name), ", exact KV %.1f %%",
+                     100.0 * (double)C.kv_exact / (double)C.kv_rows);
         printf("| %s | %d/%d (%.1f %%) | %.2e | %.2e | %.2e | %.2e | %llu |\n", name, agree, n,
                100.0 * agree / n, mean / n, srt[n / 2], mx, mean2 / (n - n / 2),
                (unsigned long long)C.ro_mat);

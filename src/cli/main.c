@@ -18,7 +18,9 @@ static void usage(void)
             "                      [--temp T] [--top-k K] [--top-p P] [--presence X] [--seed S]\n"
             "                      [--tree N]   (N-node tree; --gamma = max depth)\n"
             "                      [--keyed 0|1] (position-keyed sampling, default 1)\n"
-            "                      [--adj 1 [--adj-file F [--adj-ro 1]]] (adjacency drafts)\n");
+            "                      [--adj 1 [--adj-file F [--adj-ro 1]]] (adjacency drafts)\n"
+            "     state/KV options: [--dither 0|1] [--smooth 0|1] [--x16 0|1] [--hi F]\n"
+            "                      [--kv-bits 2|4 [--kv-refine R] [--kv-recent W]]\n");
 }
 
 int main(int argc, char **argv)
@@ -31,6 +33,8 @@ int main(int argc, char **argv)
         return cmd_meta(argv[2]);
     if (!strcmp(argv[1], "samptest"))
         return cmd_samptest();
+    if (!strcmp(argv[1], "qtest"))
+        return q35_quant_selftest(stdout);
     Q35Model m;
     char err[256];
     const double t0 = now_s();
@@ -89,8 +93,7 @@ int main(int argc, char **argv)
             q35_free(&m);
             return 1;
         }
-        s.state_fmt = o.state;
-        s.ro_rmax = o.ro_rank;
+        apply_quant(&s, &o);
         if (o.trace)
             s.trace = fopen(o.trace, "w");
         if (getenv("Q35_DUMP"))

@@ -226,6 +226,9 @@ int parse_opts(int argc, char **argv, int i0, Opts *o)
     o->adj_ro = 0;
     o->ro_rank = 16;
     o->tol = 0.0f;
+    o->dither = o->smooth = o->x16 = o->kv_bits = o->kv_refine = 0;
+    o->kv_recent = 16;
+    o->hi = 0.0f;
     for (int i = i0; i < argc; i++) {
         const char *a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -257,6 +260,13 @@ int parse_opts(int argc, char **argv, int i0, Opts *o)
         else if (!strcmp(a, "--adj-ro")) o->adj_ro = atoi(v) != 0;
         else if (!strcmp(a, "--ro-rank")) o->ro_rank = atoi(v);
         else if (!strcmp(a, "--tol")) o->tol = (float)atof(v);
+        else if (!strcmp(a, "--dither")) o->dither = atoi(v) != 0;
+        else if (!strcmp(a, "--smooth")) o->smooth = atoi(v) != 0;
+        else if (!strcmp(a, "--x16")) o->x16 = atoi(v) != 0;
+        else if (!strcmp(a, "--hi")) o->hi = (float)atof(v);
+        else if (!strcmp(a, "--kv-bits")) o->kv_bits = atoi(v);
+        else if (!strcmp(a, "--kv-refine")) o->kv_refine = atoi(v);
+        else if (!strcmp(a, "--kv-recent")) o->kv_recent = atoi(v);
         else if (!strcmp(a, "--drafter")) {
             if (!strcmp(v, "pld")) o->drafter = DR_PLD;
             else if (!strcmp(v, "jacobi")) o->drafter = DR_JACOBI;
@@ -278,8 +288,25 @@ int parse_opts(int argc, char **argv, int i0, Opts *o)
         else { fprintf(stderr, "unknown option %s\n", a); return -1; }
         i++;
     }
+    if (o->kv_bits != 0 && o->kv_bits != 2 && o->kv_bits != 4) {
+        fprintf(stderr, "--kv-bits 2|4\n");
+        return -1;
+    }
     if (o->chunk < 1) o->chunk = 1;
     if (o->top < 1) o->top = 1;
     if (o->top > 64) o->top = 64;
     return 0;
+}
+
+void apply_quant(Q35State *s, const Opts *o)
+{
+    s->state_fmt = o->state;
+    s->ro_rmax = o->ro_rank;
+    s->dither = o->dither;
+    s->smooth = o->smooth;
+    s->x16 = o->x16;
+    s->hi_frac = o->hi;
+    s->kv_bits = o->kv_bits;
+    s->kv_refine = o->kv_refine;
+    s->kv_recent = o->kv_recent;
 }

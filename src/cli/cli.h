@@ -29,6 +29,8 @@ typedef struct {
     int adj_ro;
     int ro_rank;
     float tol;
+    int dither, smooth, x16, kv_bits, kv_refine, kv_recent;
+    float hi;
 } Opts;
 
 
@@ -109,6 +111,7 @@ int keyed_pick(Sampler *S, const float *lg, int V, int pos);
 int multi_accept(Sampler *S, const float *lg, int V, const int *cand, int nc, int *bonus);
 int parse_ids(const char *s, int **out);
 int parse_opts(int argc, char **argv, int i0, Opts *o);
+void apply_quant(Q35State *s, const Opts *o);
 int pld(const int *seq, int n, int nmax, int nmin, int gamma, int *out);
 int pool_get(int key, int gamma, int *out);
 int second_best(const float *lg, int V, int best);
