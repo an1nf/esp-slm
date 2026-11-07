@@ -1,4 +1,4 @@
-/* State quantizers: Weyl dither, key smoothing, decay-based 16-bit heads. */
+/* State and KV quantizers: Weyl dither, key smoothing, decay-based 16-bit heads. */
 #include "q35_int.h"
 
 /* Weyl phase: per-element offset plus pos * (phi - 1) in 32-bit fixed point. */
@@ -133,7 +133,37 @@ int q35_pick_hi(const Q35Model *m, Q35State *s)
     return 0;
 }
 
-/* Checks: dither is unbiased, breaks the IIR deadband, smoothing helps outlier columns. */
+/* Midrise uniform quantizer for KV groups of 32: 2^bits bins over [-amax, amax], f16 step. */
+void kv_quant(const float *x, int n, int bits, int8_t *q, uint16_t *sc)
+{
+    const int L = 1 << bits;
+    const float half = 0.5f * (float)L;
+    for (int g = 0; g < n; g += 32) {
+        float amax = 0.0f;
+        for (int i = g; i < g + 32; i++)
+            if (fabsf(x[i]) > amax)
+                amax = fabsf(x[i]);
+        const uint16_t h = q35_f32_to_f16(amax / half);
+        const float d = q35_f16_to_f32(h);
+        sc[g / 32] = h;
+        for (int i = g; i < g + 32; i++) {
+            int v = d > 0.0f ? (int)floorf(x[i] / d + half) : L / 2;
+            q[i] = (int8_t)(v < 0 ? 0 : v > L - 1 ? L - 1 : v);
+        }
+    }
+}
+
+void kv_dequant(const int8_t *q, const uint16_t *sc, int n, int bits, float *y)
+{
+    const float half = 0.5f * (float)(1 << bits);
+    for (int g = 0; g < n; g += 32) {
+        const float d = q35_f16_to_f32(sc[g / 32]);
+        for (int i = g; i < g + 32; i++)
+            y[i] = ((float)q[i] - half + 0.5f) * d;
+    }
+}
+
+/* Checks: dither is unbiased, breaks the IIR deadband, smoothing helps outlier columns, KV error bound. */
 int q35_quant_selftest(FILE *f)
 {
     enum { N = 128, P = 4096 };
@@ -222,6 +252,28 @@ int q35_quant_selftest(FILE *f)
             ok ? "OK" : "FAIL");
     fails += !ok;
 
+    for (int bits = 2; bits <= 4; bits += 2) {
+        int8_t c8[N];
+        uint16_t sc[N / 32];
+        kv_quant(x, N, bits, c8, sc);
+        kv_dequant(c8, sc, N, bits, y);
+        float worst = 0.0f;
+        for (int gi = 0; gi < N; gi += 32) {
+            float amax = 0.0f;
+            for (int i = gi; i < gi + 32; i++)
+                if (fabsf(x[i]) > amax)
+                    amax = fabsf(x[i]);
+            for (int i = gi; i < gi + 32; i++) {
+                const float rel = fabsf(y[i] - x[i]) / amax;
+                if (rel > worst)
+                    worst = rel;
+            }
+        }
+        ok = worst <= 1.01f / (float)(1 << bits);
+        fprintf(f, "  kv%d: max error %.4f amax (bound %.4f): %s\n", bits, worst,
+                1.0f / (float)(1 << bits), ok ? "OK" : "FAIL");
+        fails += !ok;
+    }
     fprintf(f, "quant selftest: %s\n", fails ? "FAIL" : "OK");
     return fails ? 1 : 0;
 }

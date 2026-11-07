@@ -104,6 +104,13 @@ typedef struct {
     uint8_t *hi;
     float **ro_sm, *ro_tmp;
 
+    int kv_bits, kv_refine, kv_recent;
+    int8_t **kq, **vq;
+    uint16_t **ks, **vs;
+    float *kv_sel, *kv_deq;
+    uint8_t *kv_ex;
+    uint64_t kv_rows, kv_exact;
+
     int ro_rmax, ro_cap;
     int8_t **ro_b;
     float **ro_bs;

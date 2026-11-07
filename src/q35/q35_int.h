@@ -53,5 +53,7 @@ uint32_t q8_phase(int l, int h, int row, int pos);
 void q8_smooth(const float *M, int rows, int cols, float *cs);
 float q8_row(const float *x, int n, const float *cs, uint32_t ph, int dither, int8_t *q);
 void q8_row_inplace(float *x, int n, const float *cs, uint32_t ph, int dither);
+void kv_quant(const float *x, int n, int bits, int8_t *q, uint16_t *sc);
+void kv_dequant(const int8_t *q, const uint16_t *sc, int n, int bits, float *y);
 
 #endif

@@ -1,4 +1,4 @@
-/* Gated attention with partial RoPE and an f16/f32 KV cache. */
+/* Gated attention with partial RoPE; f16/f32 KV, optional low-bit KV with exact top-R rows. */
 #include "q35_int.h"
 
 static void rope_cache(const Q35Config *c, const int sect[4], int pos,
@@ -34,6 +34,78 @@ static void rope_apply(float *v, int half, const float *rc, const float *rs)
     }
 }
 
+static int kv_alloc(const Q35Model *m, Q35State *s)
+{
+    const Q35Config *c = &m->c;
+    const size_t L = (size_t)c->n_layer, kvd = (size_t)c->n_kv * c->head_dim;
+    const size_t n = (size_t)s->max_seq * kvd;
+    s->kq = (int8_t **)calloc(L, sizeof(int8_t *));
+    s->vq = (int8_t **)calloc(L, sizeof(int8_t *));
+    s->ks = (uint16_t **)calloc(L, sizeof(uint16_t *));
+    s->vs = (uint16_t **)calloc(L, sizeof(uint16_t *));
+    s->kv_sel = (float *)calloc((size_t)s->max_seq + 1, 4);
+    s->kv_deq = (float *)calloc((size_t)c->head_dim, 4);
+    s->kv_ex = (uint8_t *)calloc((size_t)s->max_seq + 1, 1);
+    if (!s->kq || !s->vq || !s->ks || !s->vs || !s->kv_sel || !s->kv_deq || !s->kv_ex)
+        return -1;
+    for (size_t l = 0; l < L; l++) {
+        if (m->L[l].recurrent)
+            continue;
+        s->kq[l] = (int8_t *)calloc(n, 1);
+        s->vq[l] = (int8_t *)calloc(n, 1);
+        s->ks[l] = (uint16_t *)calloc(n / 32, 2);
+        s->vs[l] = (uint16_t *)calloc(n / 32, 2);
+        if (!s->kq[l] || !s->vq[l] || !s->ks[l] || !s->vs[l])
+            return -1;
+    }
+    return 0;
+}
+
+/* k-th largest of x[0..n) (x is reordered). */
+static float kth_largest(float *x, int n, int k)
+{
+    int lo = 0, hi = n - 1;
+    while (lo < hi) {
+        const float piv = x[(lo + hi) / 2];
+        int i = lo, j = hi;
+        while (i <= j) {
+            while (x[i] > piv)
+                i++;
+            while (x[j] < piv)
+                j--;
+            if (i <= j) {
+                const float t = x[i];
+                x[i] = x[j];
+                x[j] = t;
+                i++;
+                j--;
+            }
+        }
+        if (k <= j)
+            hi = j;
+        else if (k >= i)
+            lo = i;
+        else
+            break;
+    }
+    return x[k];
+}
+
+static float dot_full(const Q35State *s, int l, size_t o, const float *q, int hd)
+{
+    float sum = 0.0f;
+    if (s->kv_f16) {
+        const uint16_t *kr = (const uint16_t *)s->kc[l] + o;
+        for (int i = 0; i < hd; i++)
+            sum += q[i] * q35_f16_to_f32(kr[i]);
+    } else {
+        const float *kr = (const float *)s->kc[l] + o;
+        for (int i = 0; i < hd; i++)
+            sum += q[i] * kr[i];
+    }
+    return sum;
+}
+
 void attn(const Q35Model *m, Q35State *s, int l, int T)
 {
     const Q35Config *c = &m->c;
@@ -46,6 +118,9 @@ void attn(const Q35Model *m, Q35State *s, int l, int T)
     linear(&Ly->wv, s, T, s->xn, E, &qr, s->vbuf, kvd);
     const float scale = 1.0f / sqrtf((float)hd);
     const int grp = nh / nkv;
+    const int lo = s->kv_bits > 0;
+    if (lo && !s->kq && kv_alloc(m, s))
+        return;
     for (int t = 0; t < T; t++) {
         const int pos = s->n_past + (s->tree ? s->tdep[t] : t);
         rope_cache(c, c->sect, pos, s->rc, s->rs);
@@ -71,6 +146,10 @@ void attn(const Q35Model *m, Q35State *s, int l, int T)
             memcpy((float *)s->kc[l] + off, k, (size_t)kvd * sizeof(float));
             memcpy((float *)s->vc[l] + off, v, (size_t)kvd * sizeof(float));
         }
+        if (lo) {
+            kv_quant(k, kvd, s->kv_bits, s->kq[l] + off, s->ks[l] + off / 32);
+            kv_quant(v, kvd, s->kv_bits, s->vq[l] + off, s->vs[l] + off / 32);
+        }
     }
     for (int t = 0; t < T; t++) {
         int np = s->n_past;
@@ -93,21 +172,54 @@ void attn(const Q35Model *m, Q35State *s, int l, int T)
             const float *gate = q + hd;
             const int kh = h / grp;
             float mx = -INFINITY;
-            for (int p = 0; p <= pos; p++) {
-                const size_t o = (size_t)s->slots[p] * kvd + (size_t)kh * hd;
-                float sum = 0.0f;
-                if (s->kv_f16) {
-                    const uint16_t *kr = (const uint16_t *)s->kc[l] + o;
+            if (lo) {
+                int nold = 0;
+                for (int p = 0; p <= pos; p++) {
+                    const size_t o = (size_t)s->slots[p] * kvd + (size_t)kh * hd;
+                    s->kv_ex[p] = pos - p < s->kv_recent;
+                    if (s->kv_ex[p]) {
+                        s->scores[p] = dot_full(s, l, o, q, hd) * scale;
+                        continue;
+                    }
+                    kv_dequant(s->kq[l] + o, s->ks[l] + o / 32, hd, s->kv_bits, s->kv_deq);
+                    float sum = 0.0f;
                     for (int i = 0; i < hd; i++)
-                        sum += q[i] * q35_f16_to_f32(kr[i]);
-                } else {
-                    const float *kr = (const float *)s->kc[l] + o;
-                    for (int i = 0; i < hd; i++)
-                        sum += q[i] * kr[i];
+                        sum += q[i] * s->kv_deq[i];
+                    s->scores[p] = sum * scale;
+                    s->kv_sel[nold++] = s->scores[p];
                 }
-                s->scores[p] = sum * scale;
-                if (s->scores[p] > mx)
-                    mx = s->scores[p];
+                s->kv_rows += (uint64_t)nold;
+                if (s->kv_refine > 0 && nold > 0) {
+                    const int R = s->kv_refine < nold ? s->kv_refine : nold;
+                    const float thr = kth_largest(s->kv_sel, nold, R - 1);
+                    int left = R;
+                    for (int p = 0; p <= pos && left > 0; p++)
+                        if (!s->kv_ex[p] && s->scores[p] > thr) {
+                            s->kv_ex[p] = 2;
+                            left--;
+                        }
+                    for (int p = 0; p <= pos && left > 0; p++)
+                        if (!s->kv_ex[p] && s->scores[p] == thr) {
+                            s->kv_ex[p] = 2;
+                            left--;
+                        }
+                    for (int p = 0; p <= pos; p++)
+                        if (s->kv_ex[p] == 2) {
+                            const size_t o = (size_t)s->slots[p] * kvd + (size_t)kh * hd;
+                            s->scores[p] = dot_full(s, l, o, q, hd) * scale;
+                            s->kv_exact++;
+                        }
+                }
+                for (int p = 0; p <= pos; p++)
+                    if (s->scores[p] > mx)
+                        mx = s->scores[p];
+            } else {
+                for (int p = 0; p <= pos; p++) {
+                    const size_t o = (size_t)s->slots[p] * kvd + (size_t)kh * hd;
+                    s->scores[p] = dot_full(s, l, o, q, hd) * scale;
+                    if (s->scores[p] > mx)
+                        mx = s->scores[p];
+                }
             }
             float tot = 0.0f;
             for (int p = 0; p <= pos; p++) {
@@ -121,7 +233,11 @@ void attn(const Q35Model *m, Q35State *s, int l, int T)
             for (int p = 0; p <= pos; p++) {
                 const float pr = s->scores[p] * inv;
                 const size_t o = (size_t)s->slots[p] * kvd + (size_t)kh * hd;
-                if (s->kv_f16) {
+                if (lo && !s->kv_ex[p]) {
+                    kv_dequant(s->vq[l] + o, s->vs[l] + o / 32, hd, s->kv_bits, s->kv_deq);
+                    for (int i = 0; i < hd; i++)
+                        oh[i] += pr * s->kv_deq[i];
+                } else if (s->kv_f16) {
                     const uint16_t *vr = (const uint16_t *)s->vc[l] + o;
                     for (int i = 0; i < hd; i++)
                         oh[i] += pr * q35_f16_to_f32(vr[i]);

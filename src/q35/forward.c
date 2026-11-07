@@ -39,6 +39,13 @@ int q35_commit_path(const Q35Model *m, Q35State *s, const int *path, int n)
                        (char *)s->kc[l] + (size_t)(s->n_past + path[k]) * kvd * es, kvd * es);
                 memcpy((char *)s->vc[l] + (size_t)(s->n_past + k) * kvd * es,
                        (char *)s->vc[l] + (size_t)(s->n_past + path[k]) * kvd * es, kvd * es);
+                if (s->kq) {
+                    const size_t d = (size_t)(s->n_past + k) * kvd, f = (size_t)(s->n_past + path[k]) * kvd;
+                    memcpy(s->kq[l] + d, s->kq[l] + f, kvd);
+                    memcpy(s->vq[l] + d, s->vq[l] + f, kvd);
+                    memcpy(s->ks[l] + d / 32, s->ks[l] + f / 32, kvd / 32 * 2);
+                    memcpy(s->vs[l] + d / 32, s->vs[l] + f / 32, kvd / 32 * 2);
+                }
             }
     }
     for (int k = 0; k < n; k++)
@@ -161,6 +168,7 @@ int q35_state_init(Q35State *s, const Q35Model *m, int max_seq, int max_T,
     s->max_seq = max_seq;
     s->max_T = max_T;
     s->kv_f16 = kv_f16;
+    s->kv_recent = 16;
     const size_t T = (size_t)max_T, E = (size_t)c->n_embd;
     const size_t vd = (size_t)c->v_heads * c->d_v, cd = (size_t)conv_dim(c);
     const size_t qd = 2 * (size_t)c->n_head * c->head_dim, kvd = (size_t)c->n_kv * c->head_dim;
@@ -272,8 +280,15 @@ void q35_state_free(Q35State *s)
         if (s->ssm) free(s->ssm[l]);
         if (s->kc) free(s->kc[l]);
         if (s->vc) free(s->vc[l]);
+        if (s->kq) {
+            free(s->kq[l]);
+            free(s->vq[l]);
+            free(s->ks[l]);
+            free(s->vs[l]);
+        }
     }
-    free(s->hi);
+    free(s->kq); free(s->vq); free(s->ks); free(s->vs);
+    free(s->kv_sel); free(s->kv_deq); free(s->kv_ex); free(s->hi);
     free(s->conv); free(s->ssm); free(s->kc); free(s->vc); free(s->lg);
     free(s->S_tmp); free(s->C_tmp); free(s->S_stk); free(s->C_stk);
     free(s->pend); free(s->tpar); free(s->tdep); free(s->slots);
