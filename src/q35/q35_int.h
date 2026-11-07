@@ -49,5 +49,9 @@ void rmsnorm(float *y, const float *x, const float *w, int n, float eps);
 void ro_free(Q35State *s, int L);
 void rot_inverse(const Q35Rot *R, float *x, int n);
 void state_round(float *x, int n, int fmt);
+uint32_t q8_phase(int l, int h, int row, int pos);
+void q8_smooth(const float *M, int rows, int cols, float *cs);
+float q8_row(const float *x, int n, const float *cs, uint32_t ph, int dither, int8_t *q);
+void q8_row_inplace(float *x, int n, const float *cs, uint32_t ph, int dither);
 
 #endif

@@ -99,6 +99,11 @@ typedef struct {
     int tree, *tpar, *tdep, *slots;
     float *S_stk, *C_stk;
 
+    int dither, smooth, x16;
+    float hi_frac;
+    uint8_t *hi;
+    float **ro_sm, *ro_tmp;
+
     int ro_rmax, ro_cap;
     int8_t **ro_b;
     float **ro_bs;
@@ -134,6 +139,9 @@ const float *q35_eval_tree(const Q35Model *m, Q35State *s, const int *tok,
                            const int *parent, int N);
 
 int q35_commit_path(const Q35Model *m, Q35State *s, const int *path, int n);
+
+int q35_pick_hi(const Q35Model *m, Q35State *s);
+int q35_quant_selftest(FILE *f);
 
 uint16_t q35_f32_to_f16(float f);
 float    q35_f16_to_f32(uint16_t h);

@@ -59,12 +59,23 @@ static void delta_step(float *M, const float *k, const float *v, float beta,
     }
 }
 
-static void state_store(float *M, int dk, int dv, const Q35State *s)
+static void state_store(float *M, int dk, int dv, const Q35State *s, int l, int h, int Hv, int pos)
 {
-    if (s->state_fmt != Q35_STATE_F32)
+    const int hi = s->hi && s->hi[(size_t)l * Hv + h];
+    if (s->state_fmt == Q35_STATE_I8 && hi) {
+        for (int j = 0; j < dv; j++)
+            state_round(M + (size_t)j * dk, dk, Q35_STATE_F16);
+    } else if (s->state_fmt == Q35_STATE_I8 && (s->dither || s->smooth)) {
+        float cs[512];
+        if (s->smooth)
+            q8_smooth(M, dv, dk, cs);
+        for (int j = 0; j < dv; j++)
+            q8_row_inplace(M + (size_t)j * dk, dk, s->smooth ? cs : NULL,
+                           q8_phase(l, h, j, pos), s->dither);
+    } else if (s->state_fmt != Q35_STATE_F32) {
         for (int j = 0; j < dv; j++)
             state_round(M + (size_t)j * dk, dk, s->state_fmt);
-    else if (s->noise_eps > 0.0f) {
+    } else if (s->noise_eps > 0.0f) {
         const size_t n = (size_t)dk * dv;
         for (size_t i = 0; i < n; i++) {
             uint32_t b;
@@ -84,6 +95,7 @@ static void gdn_replay(const Q35Model *m, Q35State *s, int l, int n)
     const int cd = conv_dim(c), kd = Hk * dk, vd = Hv * dv, K = c->d_conv;
     const size_t st = log_stride(c);
     float *cs = s->conv[l], *S = s->ssm[l];
+    const int p0 = s->n_past - n;
     for (int e = 0; e < n; e++) {
         const float *in = s->lg[l] + (size_t)s->pend[e] * st;
         const float *k = in + cd, *v = k + kd, *bt = v + vd, *eg = bt + Hv;
@@ -94,7 +106,7 @@ static void gdn_replay(const Q35Model *m, Q35State *s, int l, int n)
             float *M = S + (size_t)h * dv * dk;
             delta_step(M, k + (size_t)(h % Hk) * dk, v + (size_t)h * dv, bt[h], eg[h],
                        dk, dv, s->rc);
-            state_store(M, dk, dv, s);
+            state_store(M, dk, dv, s, l, h, Hv, p0 + e);
         }
     }
 }
@@ -119,6 +131,8 @@ void gdn(const Q35Model *m, Q35State *s, int l, int T)
         return;
     }
 
+    if (s->hi_frac > 0.0f && !s->hi && q35_pick_hi(m, s))
+        return;
     if (s->n_pend)
         gdn_replay(m, s, l, s->n_pend);
     const size_t ss = (size_t)Hv * dv * dk, cw = (size_t)(K - 1) * cd;
@@ -183,7 +197,7 @@ void gdn(const Q35Model *m, Q35State *s, int l, int T)
                     sum += row[i] * q[i];
                 oh[j] = sum * scale;
             }
-            state_store(M, dk, dv, s);
+            state_store(M, dk, dv, s, l, h, Hv, s->n_past + (s->tree ? s->tdep[t] : t));
 
             rmsnorm(oh, oh, Ly->ssm_norm, dv, c->eps);
             const float *zh = s->z + (size_t)t * vd + (size_t)h * dv;

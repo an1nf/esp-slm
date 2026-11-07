@@ -1,6 +1,36 @@
 /* Read-only GDN pass: S0 = gamma B + sum w u k^T, materialized every R tokens. */
 #include "q35_int.h"
 
+static int is_hi(const Q35State *s, int l, int h, int Hv)
+{
+    return s->hi && s->hi[(size_t)l * Hv + h];
+}
+
+/* Store one v-head of S0: int8 rows (smoothed, dithered) or f16 for 16-bit heads. */
+static void ro_quant_head(const Q35Model *m, Q35State *s, int l, int h, const float *src, int pos)
+{
+    const int Hv = m->c.v_heads, dk = m->c.d_k, dv = m->c.d_v;
+    if (is_hi(s, l, h, Hv)) {
+        float *B = s->ssm[l] + (size_t)h * dv * dk;
+        if (B != src)
+            memcpy(B, src, (size_t)dv * dk * sizeof(float));
+        for (int j = 0; j < dv; j++)
+            state_round(B + (size_t)j * dk, dk, Q35_STATE_F16);
+        return;
+    }
+    float *cs = s->ro_sm[l] + (size_t)h * dk;
+    if (s->smooth)
+        q8_smooth(src, dv, dk, cs);
+    else
+        for (int i = 0; i < dk; i++)
+            cs[i] = 1.0f;
+    for (int j = 0; j < dv; j++) {
+        const size_t r = (size_t)h * dv + j;
+        s->ro_bs[l][r] = q8_row(src + (size_t)j * dk, dk, s->smooth ? cs : NULL,
+                                q8_phase(l, h, j, pos), s->dither, s->ro_b[l] + r * dk);
+    }
+}
+
 static int ro_alloc(const Q35Model *m, Q35State *s)
 {
     const Q35Config *c = &m->c;
@@ -17,6 +47,10 @@ static int ro_alloc(const Q35Model *m, Q35State *s)
     float ***arrs[] = { &s->ro_bs, &s->ro_lgam, &s->ro_U, &s->ro_K, &s->ro_w, &s->ro_ut, &s->ro_lG };
     for (size_t a = 0; a < sizeof(arrs) / sizeof(arrs[0]); a++)
         *arrs[a] = (float **)calloc((size_t)L, sizeof(float *));
+    s->ro_sm = (float **)calloc((size_t)L, sizeof(float *));
+    s->ro_tmp = (float *)calloc((size_t)dv * dk, 4);
+    if (!s->ro_sm || !s->ro_tmp || (s->hi_frac > 0.0f && q35_pick_hi(m, s)))
+        return -1;
     s->ro_q = (float *)calloc(T * (size_t)kd, 4);
     s->ro_ak = (float *)calloc(T * (size_t)dv, 4);
     s->ro_aq = (float *)calloc(T * (size_t)dv, 4);
@@ -33,24 +67,15 @@ static int ro_alloc(const Q35Model *m, Q35State *s)
         s->ro_w[l] = (float *)calloc(cap * (size_t)Hv, 4);
         s->ro_ut[l] = (float *)calloc(T * (size_t)vd, 4);
         s->ro_lG[l] = (float *)calloc(T * (size_t)Hv, 4);
+        s->ro_sm[l] = (float *)calloc((size_t)Hv * dk, 4);
         if (!s->ro_b[l] || !s->ro_bs[l] || !s->ro_lgam[l] || !s->ro_U[l] || !s->ro_K[l]
-            || !s->ro_w[l] || !s->ro_ut[l] || !s->ro_lG[l])
+            || !s->ro_w[l] || !s->ro_ut[l] || !s->ro_lG[l] || !s->ro_sm[l])
             return -1;
-
-        if (s->state_fmt == Q35_STATE_RO8) {
-            const float *S = s->ssm[l];
-            for (int r = 0; r < Hv * dv; r++) {
-                const float *row = S + (size_t)r * dk;
-                float amax = 0.0f;
-                for (int i = 0; i < dk; i++)
-                    if (fabsf(row[i]) > amax)
-                        amax = fabsf(row[i]);
-                const float id = amax > 0.0f ? 127.0f / amax : 0.0f;
-                s->ro_bs[l][r] = amax / 127.0f;
-                for (int i = 0; i < dk; i++)
-                    s->ro_b[l][(size_t)r * dk + i] = (int8_t)rintf(row[i] * id);
-            }
-        }
+        for (int i = 0; i < Hv * dk; i++)
+            s->ro_sm[l][i] = 1.0f;
+        if (s->state_fmt == Q35_STATE_RO8)
+            for (int h = 0; h < Hv; h++)
+                ro_quant_head(m, s, l, h, s->ssm[l] + (size_t)h * dv * dk, s->n_past);
     }
     (void)kd;
     return 0;
@@ -62,14 +87,17 @@ void ro_free(Q35State *s, int L)
         return;
     for (int l = 0; l < L; l++) {
         if (s->ro_b) free(s->ro_b[l]);
-        float **arrs[] = { s->ro_bs, s->ro_lgam, s->ro_U, s->ro_K, s->ro_w, s->ro_ut, s->ro_lG };
+        float **arrs[] = { s->ro_bs, s->ro_lgam, s->ro_U, s->ro_K, s->ro_w, s->ro_ut, s->ro_lG,
+                           s->ro_sm };
         for (size_t a = 0; a < sizeof(arrs) / sizeof(arrs[0]); a++)
             if (arrs[a])
                 free(arrs[a][l]);
     }
     free(s->ro_b); free(s->ro_bs); free(s->ro_lgam); free(s->ro_U); free(s->ro_K);
     free(s->ro_w); free(s->ro_ut); free(s->ro_lG); free(s->ro_n);
-    free(s->ro_q); free(s->ro_ak); free(s->ro_aq);
+    free(s->ro_q); free(s->ro_ak); free(s->ro_aq); free(s->ro_sm); free(s->ro_tmp);
+    s->ro_sm = NULL;
+    s->ro_tmp = NULL;
     s->ro_n = NULL;
 }
 
@@ -78,19 +106,21 @@ static void ro_materialize(const Q35Model *m, Q35State *s, int l)
 {
     const Q35Config *c = &m->c;
     const int Hv = c->v_heads, dk = c->d_k, dv = c->d_v, n = s->ro_n[l];
-    float row[512];
-    if (dk > 512)
-        return;
+    const int q8 = s->state_fmt == Q35_STATE_RO8;
+    float *tmp = s->ro_tmp;
     for (int h = 0; h < Hv; h++) {
         const float gam = EXPF(s->ro_lgam[l][h]);
+        const int hi = is_hi(s, l, h, Hv);
+        const float *cs = s->ro_sm[l] + (size_t)h * dk;
         for (int j = 0; j < dv; j++) {
             const size_t r = (size_t)h * dv + j;
-            if (s->state_fmt == Q35_STATE_RO8) {
+            float *row = tmp + (size_t)j * dk;
+            if (q8 && !hi) {
                 const float sc = s->ro_bs[l][r] * gam;
                 for (int i = 0; i < dk; i++)
-                    row[i] = (float)s->ro_b[l][r * dk + i] * sc;
+                    row[i] = (float)s->ro_b[l][r * dk + i] * sc * cs[i];
             } else {
-                float *B = s->ssm[l] + r * dk;
+                const float *B = s->ssm[l] + r * dk;
                 for (int i = 0; i < dk; i++)
                     row[i] = B[i] * gam;
             }
@@ -101,20 +131,14 @@ static void ro_materialize(const Q35Model *m, Q35State *s, int l)
                 for (int i = 0; i < dk; i++)
                     row[i] += uj * kk[i];
             }
-            if (s->state_fmt == Q35_STATE_RO8) {
-                float amax = 0.0f;
-                for (int i = 0; i < dk; i++)
-                    if (fabsf(row[i]) > amax)
-                        amax = fabsf(row[i]);
-                const float id = amax > 0.0f ? 127.0f / amax : 0.0f;
-                s->ro_bs[l][r] = amax / 127.0f;
-                for (int i = 0; i < dk; i++)
-                    s->ro_b[l][r * dk + i] = (int8_t)rintf(row[i] * id);
-            } else {
-                if (s->state_fmt == Q35_STATE_RO16)
-                    state_round(row, dk, Q35_STATE_F16);
-                memcpy(s->ssm[l] + r * dk, row, (size_t)dk * sizeof(float));
-            }
+        }
+        if (q8) {
+            ro_quant_head(m, s, l, h, tmp, s->n_past);
+        } else {
+            if (s->state_fmt == Q35_STATE_RO16)
+                for (int j = 0; j < dv; j++)
+                    state_round(tmp + (size_t)j * dk, dk, Q35_STATE_F16);
+            memcpy(s->ssm[l] + (size_t)h * dv * dk, tmp, (size_t)dv * dk * sizeof(float));
         }
         s->ro_lgam[l][h] = 0.0f;
     }
@@ -162,18 +186,34 @@ static void ro_commit(const Q35Model *m, Q35State *s, int l, int n)
         ro_materialize(m, s, l);
 }
 
-/* y = S0 x with S0 = gamma B + sum_e w_e u_e k_e^T. */
+/* y = S0 x with S0 = gamma B + sum_e w_e u_e k_e^T; int8 B is read against int8 or int16 x. */
 static void ro_apply(const Q35Model *m, const Q35State *s, int l, int h, const float *x, float *y)
 {
     const Q35Config *c = &m->c;
     const int Hv = c->v_heads, dk = c->d_k, dv = c->d_v;
     const float gam = EXPF(s->ro_lgam[l][h]);
-    if (s->state_fmt == Q35_STATE_RO8) {
+    if (s->state_fmt == Q35_STATE_RO8 && !is_hi(s, l, h, Hv)) {
+        float xs[512], xd[16];
         int8_t xq[512];
-        float xd[16];
+        int16_t xw[512];
+        const float *cs = s->ro_sm[l] + (size_t)h * dk;
+        for (int i = 0; i < dk; i++)
+            xs[i] = s->smooth ? x[i] * cs[i] : x[i];
         const int nb = dk / 32;
-        for (int b = 0; b < nb; b++)
-            q35_quant_q8(x + b * 32, 32, xq + b * 32, &xd[b]);
+        for (int b = 0; b < nb; b++) {
+            if (s->x16) {
+                float amax = 0.0f;
+                for (int e = 0; e < 32; e++)
+                    if (fabsf(xs[b * 32 + e]) > amax)
+                        amax = fabsf(xs[b * 32 + e]);
+                xd[b] = amax / 32767.0f;
+                const float id = amax > 0.0f ? 32767.0f / amax : 0.0f;
+                for (int e = 0; e < 32; e++)
+                    xw[b * 32 + e] = (int16_t)rintf(xs[b * 32 + e] * id);
+            } else {
+                q35_quant_q8(xs + b * 32, 32, xq + b * 32, &xd[b]);
+            }
+        }
         const int8_t *B = s->ro_b[l] + (size_t)h * dv * dk;
         const float *bs = s->ro_bs[l] + (size_t)h * dv;
         for (int j = 0; j < dv; j++) {
@@ -181,8 +221,12 @@ static void ro_apply(const Q35Model *m, const Q35State *s, int l, int h, const f
             float acc = 0.0f;
             for (int b = 0; b < nb; b++) {
                 int32_t si = 0;
-                for (int e = 0; e < 32; e++)
-                    si += (int32_t)row[b * 32 + e] * xq[b * 32 + e];
+                if (s->x16)
+                    for (int e = 0; e < 32; e++)
+                        si += (int32_t)row[b * 32 + e] * xw[b * 32 + e];
+                else
+                    for (int e = 0; e < 32; e++)
+                        si += (int32_t)row[b * 32 + e] * xq[b * 32 + e];
                 acc += xd[b] * (float)si;
             }
             y[j] = acc * bs[j] * gam;

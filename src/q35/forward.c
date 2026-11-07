@@ -257,6 +257,8 @@ void q35_reset(Q35State *s, const Q35Model *m)
                 memset(s->ro_b[l], 0, (size_t)c->v_heads * c->d_v * c->d_k);
                 memset(s->ro_bs[l], 0, (size_t)c->v_heads * c->d_v * 4);
                 memset(s->ro_lgam[l], 0, (size_t)c->v_heads * 4);
+                for (int i = 0; i < c->v_heads * c->d_k; i++)
+                    s->ro_sm[l][i] = 1.0f;
             }
         }
 }
@@ -271,6 +273,7 @@ void q35_state_free(Q35State *s)
         if (s->kc) free(s->kc[l]);
         if (s->vc) free(s->vc[l]);
     }
+    free(s->hi);
     free(s->conv); free(s->ssm); free(s->kc); free(s->vc); free(s->lg);
     free(s->S_tmp); free(s->C_tmp); free(s->S_stk); free(s->C_stk);
     free(s->pend); free(s->tpar); free(s->tdep); free(s->slots);
