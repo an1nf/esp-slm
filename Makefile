@@ -43,6 +43,7 @@ test: all
 	./$(OUT)/q35 test $(OUT)/q35_d.gguf $(OUT)/q35_d.ref
 	./$(OUT)/q35 test $(OUT)/q35_e.gguf $(OUT)/q35_e.ref
 	./$(OUT)/q35 samptest -
+	./$(OUT)/q35 qtest -
 	$(PY) tests/test_spec.py ./$(OUT)/q35 $(OUT)
 	@echo "all tests passed"
 
