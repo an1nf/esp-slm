@@ -229,6 +229,7 @@ int parse_opts(int argc, char **argv, int i0, Opts *o)
     o->dither = o->smooth = o->x16 = o->kv_bits = o->kv_refine = 0;
     o->kv_recent = 16;
     o->hi = 0.0f;
+    o->ds = NULL;
     for (int i = i0; i < argc; i++) {
         const char *a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -267,6 +268,7 @@ int parse_opts(int argc, char **argv, int i0, Opts *o)
         else if (!strcmp(a, "--kv-bits")) o->kv_bits = atoi(v);
         else if (!strcmp(a, "--kv-refine")) o->kv_refine = atoi(v);
         else if (!strcmp(a, "--kv-recent")) o->kv_recent = atoi(v);
+        else if (!strcmp(a, "--ds")) o->ds = v;
         else if (!strcmp(a, "--drafter")) {
             if (!strcmp(v, "pld")) o->drafter = DR_PLD;
             else if (!strcmp(v, "jacobi")) o->drafter = DR_JACOBI;

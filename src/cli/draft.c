@@ -4,10 +4,10 @@
 const char *ts_name[TR_SRC] = {
     "context", "context (other)", "reservoir", "Jacobi", "Jacobi 2nd", "context 1-gram",
     "seed", "oracle", "adj 1st", "adj 2nd", "adj 3rd-4th",
-    "adj 5th-8th"
+    "adj 5th-8th", "datastore", "datastore 2nd+"
 };
 const double ts_prior[TR_SRC] = { 0.6, 0.4, 0.4, 0.3, 0.15, 0.2, 0.05, 0.9,
-                                  0.35, 0.15, 0.08, 0.04 };
+                                  0.35, 0.15, 0.08, 0.04, 0.5, 0.2 };
 
 int adj_src(int rank)
 {
@@ -218,6 +218,13 @@ void tr_build(TreeDraft *R, const int *seq, int n, int ngram, const int *orc, in
                     nshort++;
             }
         }
+    }
+
+    if (R->ds) {
+        int dc[4][TR_MAXD], dl[4];
+        const int nd = ds_drafts(R->ds, seq, n, R->maxd, dc, dl, 4);
+        for (int i = 0; i < nd; i++)
+            tr_insert(R, dc[i], dl[i], i ? TS_DS2 : TS_DS);
     }
 
     int npool = 0;

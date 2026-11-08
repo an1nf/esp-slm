@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 
 #include "q35.h"
@@ -31,6 +32,7 @@ typedef struct {
     float tol;
     int dither, smooth, x16, kv_bits, kv_refine, kv_recent;
     float hi;
+    const char *ds;
 } Opts;
 
 
@@ -55,7 +57,7 @@ typedef struct {
 } PoolEnt;
 
 enum { TS_CTX, TS_CTX2, TS_POOL, TS_JAC, TS_JALT, TS_CTX1, TS_SEED, TS_ORC,
-       TS_ADJ0, TS_ADJ1, TS_ADJ2, TS_ADJ4, TR_SRC };
+       TS_ADJ0, TS_ADJ1, TS_ADJ2, TS_ADJ4, TS_DS, TS_DS2, TR_SRC };
 
 #define ADJ_K 8
 
@@ -80,7 +82,18 @@ typedef struct {
     long hist_acc[TR_MAXD + 1];
     int *adj, V;
     int expd[TR_CAP];
+    const struct Datastore *ds;
 } TreeDraft;
+
+typedef struct Datastore {
+    int n;
+    int32_t *tok, *sa;
+} Datastore;
+
+int ds_load(Datastore *D, const char *path, int V);
+void ds_free(Datastore *D);
+int ds_drafts(const Datastore *D, const int *seq, int n, int maxd, int out[][TR_MAXD], int *len,
+              int maxc);
 
 extern PoolEnt g_pool[POOL_N];
 extern int g_pool_n, g_pool_head;

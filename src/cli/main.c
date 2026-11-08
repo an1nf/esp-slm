@@ -19,6 +19,7 @@ static void usage(void)
             "                      [--tree N]   (N-node tree; --gamma = max depth)\n"
             "                      [--keyed 0|1] (position-keyed sampling, default 1)\n"
             "                      [--adj 1 [--adj-file F [--adj-ro 1]]] (adjacency drafts)\n"
+            "                      [--ds F]     (suffix-array datastore drafts)\n"
             "     state/KV options: [--dither 0|1] [--smooth 0|1] [--x16 0|1] [--hi F]\n"
             "                      [--kv-bits 2|4 [--kv-refine R] [--kv-recent W]]\n");
 }

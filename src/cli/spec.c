@@ -192,6 +192,15 @@ int cmd_spec(const Q35Model *m, Q35State *s, const Opts *o)
             return 1;
         TR->N = o->tree;
         TR->maxd = o->gamma;
+        if (o->ds) {
+            Datastore *D = (Datastore *)calloc(1, sizeof(Datastore));
+            if (!D || ds_load(D, o->ds, V)) {
+                fprintf(stderr, "cannot load datastore %s\n", o->ds);
+                return 1;
+            }
+            fprintf(stderr, "datastore: %d tokens (%s)\n", D->n, o->ds);
+            TR->ds = D;
+        }
         if (o->adj) {
             TR->V = V;
             TR->adj = (int *)malloc((size_t)V * ADJ_K * sizeof(int));
@@ -414,8 +423,13 @@ int cmd_spec(const Q35Model *m, Q35State *s, const Opts *o)
         if (f)
             fclose(f);
     }
-    if (TR)
+    if (TR) {
         free(TR->adj);
+        if (TR->ds) {
+            ds_free((Datastore *)TR->ds);
+            free((void *)TR->ds);
+        }
+    }
     free(TR);
     free(y);
     free(jac);
