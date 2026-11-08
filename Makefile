@@ -13,10 +13,13 @@ INC      = -Isrc/common -Isrc/q35 -Isrc/cli
 
 .PHONY: all test clean
 
-all: $(OUT)/tern $(OUT)/q35
+all: $(OUT)/tern $(OUT)/q35 $(OUT)/gemvbench
 
 $(OUT)/tern: $(TERN_SRC) $(wildcard src/tern/*.h) | $(OUT)
 	$(CC) $(CFLAGS) -pthread -o $@ $(TERN_SRC) -lm -pthread
+
+$(OUT)/gemvbench: src/bench/gemv_bench.c | $(OUT)
+	$(CC) $(CFLAGS) -o $@ $<
 
 $(OUT)/q35: $(Q35_SRC) $(wildcard src/*/*.h) | $(OUT)
 	$(CC) $(CFLAGS) $(OMPFLAGS) $(INC) -o $@ $(Q35_SRC) -lm
@@ -44,6 +47,7 @@ test: all
 	./$(OUT)/q35 test $(OUT)/q35_e.gguf $(OUT)/q35_e.ref
 	./$(OUT)/q35 samptest -
 	./$(OUT)/q35 qtest -
+	./$(OUT)/gemvbench --rows 128 --cols 640 --reps 1 --check
 	$(PY) tests/test_spec.py ./$(OUT)/q35 $(OUT)
 	$(PY) tests/test_quant.py ./$(OUT)/q35 $(OUT)
 	@echo "all tests passed"
