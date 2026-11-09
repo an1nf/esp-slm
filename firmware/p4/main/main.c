@@ -18,6 +18,7 @@ void app_main(void)
     bench_mem(&m);
     bench_kernels(&m);
     bench_sd(&m);
+    calibrate(&m);
     printf("done\n");
     while (1)
         vTaskDelay(pdMS_TO_TICKS(1000));
