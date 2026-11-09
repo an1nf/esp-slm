@@ -10,7 +10,9 @@ import q35_cmp as C
 from q35_head_bench import EXTRA
 from q35_spec_bench import PROMPTS
 
-CANDS = "f16,bf16,int8,ro32:16:2,ro16:16:2,ro8:8:2,ro8:16:2,ro8:32:2,ro8:16:16"
+CANDS = "f16,bf16,int8,ro32:16:2,ro16:16:2,ro8:4:2,ro8:8:2,ro8:16:2,ro8:32:2,ro8:16:16"
+QUANT = ("int8,int8+d,int8+s,int8+d+s,int8+h25,ro32:4:2,ro8:4:2,ro8+d:4:2,ro8+s:4:2,ro8+x16:4:2,"
+         "ro8+d+s+x16:4:2,ro8+d+s+x16+h25:4:2,f32+k4,f32+k4+r32,f32+k2,f32+k2+r32")
 
 
 def main():
@@ -20,10 +22,13 @@ def main():
     ap.add_argument("--q35", default="build/q35")
     ap.add_argument("--gen", type=int, default=160)
     ap.add_argument("--cands", default=CANDS)
+    ap.add_argument("--quant", action="store_true", help="dither, smoothing, int16 reads, 16-bit heads, low-bit KV")
     ap.add_argument("--out", default="results")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    tag = os.path.splitext(os.path.basename(a.model))[0]
+    if a.quant:
+        a.cands = QUANT
+    tag = os.path.splitext(os.path.basename(a.model))[0] + (".quant" if a.quant else "")
     log = open(os.path.join(a.out, f"{tag}.ro.log"), "w")
     texts = dict(PROMPTS)
     texts.update(EXTRA)
@@ -78,9 +83,16 @@ def main():
          "exact f32 state. KL(exact || candidate) per position, pooled over all positions.", "",
          "| Candidate | argmax equal | KL mean | KL mean 2nd half | materializations |",
          "|---|---|---|---|---|"]
+    kl = {}
     for k in order:
         n, same, s, s2, n2, mat = agg[k]
+        kl[k.split(",")[0]] = s / n
         L.append(f"| {k} | {same}/{n} ({100 * same / n:.2f} %) | {s / n:.2e} | {s2 / n2:.2e} | {mat} |")
+    ref = next((v for k, v in kl.items() if k.startswith("ro32")), None)
+    r4, r8 = kl.get("ro8 rank 4"), kl.get("ro8 rank 8")
+    if ref is not None and r4 is not None and r8 is not None and r8 > ref:
+        L += ["", f"rho = (KL R4 - KL ro32) / (KL R8 - KL ro32) = {(r4 - ref) / (r8 - ref):.2f} "
+              "(pure 1/C law: 2)"]
     rep = "\n".join(L)
     with open(os.path.join(a.out, f"{tag}.ro.md"), "w") as f:
         f.write(rep + "\n")
