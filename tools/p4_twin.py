@@ -56,6 +56,9 @@ class Variant:
     core: str = "seq"
     wy_rank: int = 8
     wy_flush: int = 4
+    kv_bits: int = 0
+    kv_refine: int = 0
+    kv_recent: int = 16
 
 
 @dataclass
@@ -91,13 +94,23 @@ def mats(c: dict, head_rows: int = V):
     return out
 
 
+def kv_row_bytes(v: Variant) -> float:
+    return v.kv_bits / 8 + 2 / 32 if v.kv_bits else v.kv_bytes
+
+
+def refine_rows(c: dict, v: Variant) -> float:
+    if not v.kv_bits or not v.kv_refine:
+        return 0.0
+    return min(max(0, v.ctx - v.kv_recent), v.kv_refine * v.T)
+
+
 def memory(c: dict, v: Variant):
     nrec = c["L"] * 3 // 4
     natt = c["L"] - nrec
     kd, vd = c["Hk"] * c["d"], c["Hv"] * c["d"]
     state = nrec * c["Hv"] * c["d"] * c["d"] * v.state_bytes
     conv = nrec * 3 * (2 * kd + vd) * 4
-    kv = v.ctx * natt * 2 * c["nkv"] * c["hd"] * v.kv_bytes
+    kv = v.ctx * natt * 2 * c["nkv"] * c["hd"] * kv_row_bytes(v)
     aux = c["L"] * 2 * c["E"] * 4 + nrec * (2 * c["Hv"] + c["d"]) * 4 + nrec * (2 * kd + vd) * 16
     out = dict(state=state, conv=conv, kv=kv, aux=aux)
     if v.core == "ro8":
@@ -122,7 +135,7 @@ def core_cost(c: dict, kind: str, v: Variant, p: P4, width: int = 0):
         st = c["Hv"] * c["d"] * c["d"]
         flops = v.T * (st * 8 + (2 * c["Hk"] + c["Hv"]) * c["d"] * 12)
         return 2 * st * v.state_bytes, flops / (p.fp_gflops * 1e9)
-    nkv_b = 2 * c["nkv"] * c["hd"] * v.kv_bytes
+    nkv_b = 2 * c["nkv"] * c["hd"] * kv_row_bytes(v)
     kvread = v.ctx * nkv_b + v.T * nkv_b
     if v.core == "ro8":
         macs = v.T * (v.ctx + v.T) * c["nh"] * c["hd"] * 2
@@ -162,6 +175,10 @@ def steps(c: dict, v: Variant, p: P4):
             n = max(1, math.ceil(b / p.chunk))
             for k in range(n):
                 out.append(("psram", min(p.chunk, b - k * p.chunk), sec / n))
+            if m[0] == "attn":
+                row = 2 * c["nkv"] * c["hd"] * 2
+                for _ in range(int(round(refine_rows(c, v)))):
+                    out.append(("sd", row, 0.0))
             continue
         segs, r = [], 0
         for t in ("psram", "flash"):
@@ -377,6 +394,50 @@ def combos(out_path=None):
     print(txt)
 
 
+TAU_ADJ = {"2B": {1: 1.0, 16: 1.98, 32: 2.21}, "4B": {1: 1.0, 16: 1.89, 32: 2.28}}
+
+
+def tau_at(table: dict, n: int) -> float:
+    ks = sorted(table)
+    if n <= ks[0]:
+        return table[ks[0]]
+    for a, b in zip(ks, ks[1:]):
+        if n <= b:
+            w = (math.log(n) - math.log(a)) / (math.log(b) - math.log(a))
+            return table[a] + w * (table[b] - table[a])
+    a, b = ks[-2], ks[-1]
+    slope = (table[b] - table[a]) / (math.log(b) - math.log(a))
+    return table[b] + slope * (math.log(n) - math.log(b))
+
+
+def best_lanes(v: Variant, p: P4, tau: dict, ns=(1, 4, 8, 12, 16, 24, 32)):
+    rows = []
+    for n in ns:
+        t = run_pass(replace(v, T=n), p)["time"]
+        rows.append((n, t, tau_at(tau, n), t / tau_at(tau, n)))
+    return min(rows, key=lambda r: r[3]), rows
+
+
+def lanes_report(model: str, ctx: int, sds, tau: dict, core: str, kv_bits: int, kv_refine: int):
+    sb = 2 if model == "2B" else 1
+    ro = core == "ro8"
+    v = Variant(model, 1, ctx, 1 if ro or model != "2B" else sb, sb, core=core,
+                wy_rank=(32 if model == "2B" else 4) if ro else 8,
+                wy_flush=(16 if model == "2B" else 2) if ro else 4,
+                kv_bits=kv_bits, kv_refine=kv_refine)
+    m = memory(CFG[model], v)
+    print(f"{model} ctx {ctx} core {core} kv {'%d-bit, refine %d' % (kv_bits, kv_refine) if kv_bits else 'int8/f16'}; "
+          f"PSRAM fixed {sum(m.values()) / MB:.1f} MB, free for weights "
+          f"{(P4().psram_mb - P4().reserve_mb) - sum(m.values()) / MB:.1f} MB")
+    print("| SD MB/s | best N | s/pass | tau | s/token | " + " | ".join(f"N={r}" for r in (8, 16, 32)) + " |")
+    print("|---|---|---|---|---|---|---|---|")
+    for sd in sds:
+        best, rows = best_lanes(v, replace(P4(), sd_bw=sd), tau)
+        cells = {n: x for n, _, _, x in rows}
+        print(f"| {sd:g} | {best[0]} | {best[1]:.1f} | {best[2]:.2f} | **{best[3]:.1f}** | "
+              + " | ".join(f"{cells[n]:.1f}" for n in (8, 16, 32)) + " |")
+
+
 def check(model: str, trace: str) -> int:
     c = CFG[model]
     want = [m for m in mats(c) if isinstance(m, Mat)]
@@ -417,6 +478,14 @@ def main():
     pp.add_argument("--lane", type=float, default=6.4)
     cb = sub.add_parser("combos")
     cb.add_argument("--out")
+    ln = sub.add_parser("lanes")
+    ln.add_argument("--model", default="4B", choices=sorted(CFG))
+    ln.add_argument("--ctx", type=int, default=512)
+    ln.add_argument("--sd", default="16,25,40,60,80")
+    ln.add_argument("--core", default="ro8", choices=("seq", "ro8"))
+    ln.add_argument("--tau", help="measured tau per lanes, e.g. 1:1,16:1.89,32:2.28")
+    ln.add_argument("--kv-bits", type=int, default=0)
+    ln.add_argument("--kv-refine", type=int, default=0)
     ck = sub.add_parser("check")
     ck.add_argument("--model", default="2B", choices=sorted(CFG))
     ck.add_argument("--trace", required=True)
@@ -425,6 +494,12 @@ def main():
         report(a.out)
     elif a.cmd == "combos":
         combos(a.out)
+    elif a.cmd == "lanes":
+        tau = TAU_ADJ.get(a.model, TAU_ADJ["4B"])
+        if a.tau:
+            tau = {int(k): float(x) for k, x in (kv.split(":") for kv in a.tau.split(","))}
+        lanes_report(a.model, a.ctx, [float(x) for x in a.sd.split(",")], tau, a.core,
+                     a.kv_bits, a.kv_refine)
     elif a.cmd == "pass":
         r = run_pass(Variant(a.model, a.T, a.ctx, a.state, a.kv, a.head),
                      replace(P4(), sd_bw=a.sd, decode_mbps=a.decode, lane_gmacs=a.lane))
