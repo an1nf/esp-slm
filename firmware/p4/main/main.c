@@ -17,6 +17,7 @@ void app_main(void)
     hx_meas_t m = {0};
     bench_mem(&m);
     bench_kernels(&m);
+    bench_sd(&m);
     printf("done\n");
     while (1)
         vTaskDelay(pdMS_TO_TICKS(1000));
